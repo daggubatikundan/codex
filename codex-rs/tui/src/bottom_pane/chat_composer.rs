@@ -259,8 +259,11 @@ impl ChatComposer {
                 ..
             } => {
                 if let Some(cmd) = popup.selected_command() {
-                    // Send command to the app layer.
-                    self.app_event_tx.send(AppEvent::DispatchCommand(*cmd));
+                    // Get the full command text before clearing
+                    let command_text = self.textarea.text().to_string();
+                    
+                    // Send command to the app layer with full text.
+                    self.app_event_tx.send(AppEvent::DispatchCommand(*cmd, command_text));
 
                     // Clear textarea so no residual text remains.
                     self.textarea.set_text("");
@@ -1068,8 +1071,9 @@ mod tests {
 
         // Verify a DispatchCommand event for the "init" command was sent.
         match rx.try_recv() {
-            Ok(AppEvent::DispatchCommand(cmd)) => {
+            Ok(AppEvent::DispatchCommand(cmd, text)) => {
                 assert_eq!(cmd.command(), "init");
+                assert_eq!(text, "/init");
             }
             Ok(_other) => panic!("unexpected app event"),
             Err(TryRecvError::Empty) => panic!("expected a DispatchCommand event for '/init'"),

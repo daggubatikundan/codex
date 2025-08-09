@@ -5,6 +5,7 @@ use std::sync::Arc;
 use codex_core::codex_wrapper::CodexConversation;
 use codex_core::codex_wrapper::init_codex;
 use codex_core::config::Config;
+use codex_core::config_types::ReasoningEffort;
 use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
@@ -79,6 +80,7 @@ pub(crate) struct ChatWidget<'a> {
     current_stream: Option<StreamKind>,
     stream_header_emitted: bool,
     live_max_rows: u16,
+    welcome_shown: bool,
 }
 
 struct UserMessage {
@@ -224,6 +226,7 @@ impl ChatWidget<'_> {
             current_stream: None,
             stream_header_emitted: false,
             live_max_rows: 3,
+            welcome_shown: false,
         }
     }
 
@@ -301,7 +304,12 @@ impl ChatWidget<'_> {
                 self.bottom_pane
                     .set_history_metadata(event.history_log_id, event.history_entry_count);
                 // Record session information at the top of the conversation.
-                self.add_to_history(HistoryCell::new_session_info(&self.config, event, true));
+                // Only show welcome message on first SessionConfigured event
+                let is_first = !self.welcome_shown;
+                if is_first {
+                    self.welcome_shown = true;
+                }
+                self.add_to_history(HistoryCell::new_session_info(&self.config, event, is_first));
 
                 if let Some(user_message) = self.initial_user_message.take() {
                     // If the user provided an initial message, add it to the
@@ -564,6 +572,62 @@ impl ChatWidget<'_> {
 
     pub(crate) fn add_prompts_output(&mut self) {
         self.add_to_history(HistoryCell::new_prompts_output());
+    }
+
+    pub(crate) fn handle_reasoning_command(&mut self, command_text: String) {
+        // Parse the command to extract the parameter
+        let parts: Vec<&str> = command_text.trim().split_whitespace().collect();
+        
+        if parts.len() > 1 {
+            // User specified a level: /reasoning high
+            let new_effort = match parts[1].to_lowercase().as_str() {
+                "low" => ReasoningEffort::Low,
+                "medium" | "med" => ReasoningEffort::Medium,
+                "high" => ReasoningEffort::High,
+                "none" | "off" => ReasoningEffort::None,
+                _ => {
+                    // Invalid parameter, show error and return
+                    let message = format!(
+                        "Invalid reasoning level: '{}'. Use: low, medium, high, or none",
+                        parts[1]
+                    );
+                    self.add_to_history(HistoryCell::new_error_event(message));
+                    return;
+                }
+            };
+            self.set_reasoning_effort(new_effort);
+        } else {
+            // No parameter - show interactive selection UI
+            self.bottom_pane.show_reasoning_selection(self.config.model_reasoning_effort);
+            return;
+        }
+    }
+    
+    pub(crate) fn set_reasoning_effort(&mut self, new_effort: ReasoningEffort) {
+        
+        // Update the config
+        self.config.model_reasoning_effort = new_effort;
+        
+        // Send ConfigureSession op to update the backend
+        let op = Op::ConfigureSession {
+            provider: self.config.model_provider.clone(),
+            model: self.config.model.clone(),
+            model_reasoning_effort: new_effort,
+            model_reasoning_summary: self.config.model_reasoning_summary,
+            user_instructions: self.config.user_instructions.clone(),
+            base_instructions: self.config.base_instructions.clone(),
+            approval_policy: self.config.approval_policy.clone(),
+            sandbox_policy: self.config.sandbox_policy.clone(),
+            disable_response_storage: self.config.disable_response_storage,
+            notify: self.config.notify.clone(),
+            cwd: self.config.cwd.clone(),
+            resume_path: None,
+        };
+        
+        self.submit_op(op);
+        
+        // Add status message to history
+        self.add_to_history(HistoryCell::new_reasoning_output(new_effort));
     }
 
     /// Forward file-search results to the bottom pane.

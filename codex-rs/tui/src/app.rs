@@ -310,7 +310,7 @@ impl App<'_> {
                     AppState::Chat { widget } => widget.update_latest_log(line),
                     AppState::Onboarding { .. } => {}
                 },
-                AppEvent::DispatchCommand(command) => match command {
+                AppEvent::DispatchCommand(command, command_text) => match command {
                     SlashCommand::New => {
                         // User accepted – switch to chat view.
                         let new_widget = Box::new(ChatWidget::new(
@@ -371,6 +371,11 @@ impl App<'_> {
                             widget.add_status_output();
                         }
                     }
+                    SlashCommand::Reasoning => {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.handle_reasoning_command(command_text);
+                        }
+                    }
                     SlashCommand::Prompts => {
                         if let AppState::Chat { widget } = &mut self.app_state {
                             widget.add_prompts_output();
@@ -416,6 +421,11 @@ impl App<'_> {
                         }));
                     }
                 },
+                AppEvent::UpdateReasoningEffort(new_effort) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_reasoning_effort(new_effort);
+                    }
+                }
                 AppEvent::OnboardingAuthComplete(result) => {
                     if let AppState::Onboarding { screen } = &mut self.app_state {
                         screen.on_auth_complete(result);

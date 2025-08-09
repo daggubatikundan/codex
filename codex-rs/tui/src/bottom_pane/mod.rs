@@ -20,6 +20,7 @@ mod command_popup;
 mod file_search_popup;
 mod live_ring_widget;
 mod popup_consts;
+mod reasoning_selection_view;
 mod scroll_state;
 mod selection_popup_common;
 mod status_indicator_view;
@@ -36,7 +37,9 @@ pub(crate) use chat_composer::InputResult;
 
 use crate::status_indicator_widget::StatusIndicatorWidget;
 use approval_modal_view::ApprovalModalView;
+use reasoning_selection_view::ReasoningSelectionView;
 use status_indicator_view::StatusIndicatorView;
+use codex_core::config_types::ReasoningEffort;
 
 /// Pane displayed in the lower half of the chat UI.
 pub(crate) struct BottomPane<'a> {
@@ -317,6 +320,15 @@ impl BottomPane<'_> {
         let modal = ApprovalModalView::new(request, self.app_event_tx.clone());
         self.active_view = Some(Box::new(modal));
         // Hide any overlay status while a modal is visible.
+        self.live_status = None;
+        self.status_view_active = false;
+        self.request_redraw()
+    }
+    
+    /// Show the reasoning selection UI
+    pub fn show_reasoning_selection(&mut self, current_effort: ReasoningEffort) {
+        let view = ReasoningSelectionView::new(current_effort, self.app_event_tx.clone());
+        self.active_view = Some(Box::new(view));
         self.live_status = None;
         self.status_view_active = false;
         self.request_redraw()

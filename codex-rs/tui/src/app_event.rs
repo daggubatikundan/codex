@@ -1,3 +1,4 @@
+use codex_core::config_types::ReasoningEffort;
 use codex_core::protocol::Event;
 use codex_file_search::FileMatch;
 use crossterm::event::KeyEvent;
@@ -32,8 +33,11 @@ pub(crate) enum AppEvent {
     LatestLog(String),
 
     /// Dispatch a recognized slash command from the UI (composer) to the app
-    /// layer so it can be handled centrally.
-    DispatchCommand(SlashCommand),
+    /// layer so it can be handled centrally. Includes the full command text.
+    DispatchCommand(SlashCommand, String),
+    
+    /// Update the reasoning effort level
+    UpdateReasoningEffort(ReasoningEffort),
 
     /// Kick off an asynchronous file search for the given query (text after
     /// the `@`). Previous searches may be cancelled by the app layer so there

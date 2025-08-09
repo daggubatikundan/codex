@@ -8,6 +8,7 @@ use codex_ansi_escape::ansi_escape_line;
 use codex_common::create_config_summary_entries;
 use codex_common::elapsed::format_duration;
 use codex_core::config::Config;
+use codex_core::config_types::ReasoningEffort;
 use codex_core::plan_tool::PlanItemArg;
 use codex_core::plan_tool::StepStatus;
 use codex_core::plan_tool::UpdatePlanArgs;
@@ -107,6 +108,9 @@ pub(crate) enum HistoryCell {
 
     /// Output from the `/diff` command.
     GitDiffOutput { view: TextBlock },
+    
+    /// Output from the `/reasoning` command.
+    ReasoningOutput { view: TextBlock },
 
     /// Output from the `/status` command.
     StatusOutput { view: TextBlock },
@@ -166,6 +170,7 @@ impl HistoryCell {
             | HistoryCell::UserPrompt { view }
             | HistoryCell::BackgroundEvent { view }
             | HistoryCell::GitDiffOutput { view }
+            | HistoryCell::ReasoningOutput { view }
             | HistoryCell::StatusOutput { view }
             | HistoryCell::PromptsOutput { view }
             | HistoryCell::ErrorEvent { view }
@@ -500,6 +505,20 @@ impl HistoryCell {
 
         lines.push(Line::from(""));
         HistoryCell::GitDiffOutput {
+            view: TextBlock::new(lines),
+        }
+    }
+
+    pub(crate) fn new_reasoning_output(effort: ReasoningEffort) -> Self {
+        use ratatui::style::Stylize;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from("/reasoning".magenta()));
+        lines.push(Line::from(vec![
+            "Reasoning effort changed to: ".into(),
+            format!("{}", effort).bold().into(),
+        ]));
+        lines.push(Line::from(""));
+        HistoryCell::ReasoningOutput {
             view: TextBlock::new(lines),
         }
     }
