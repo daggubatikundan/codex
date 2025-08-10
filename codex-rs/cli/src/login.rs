@@ -5,23 +5,33 @@ use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_login::AuthMode;
 use codex_login::CodexAuth;
+use codex_login::EXIT_CODE_WHEN_ADDRESS_ALREADY_IN_USE;
 use codex_login::OPENAI_API_KEY_ENV_VAR;
 use codex_login::login_with_api_key;
 use codex_login::login_with_chatgpt;
 use codex_login::logout;
 
-pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) -> ! {
+pub async fn run_login_with_chatgpt(
+    cli_config_overrides: CliConfigOverrides,
+    no_browser: bool,
+    verbose: bool,
+) -> ! {
     let config = load_config_or_exit(cli_config_overrides);
 
-    let capture_output = false;
-    match login_with_chatgpt(&config.codex_home, capture_output).await {
+    let open_browser = !no_browser;
+    match login_with_chatgpt(&config.codex_home, open_browser, verbose).await {
         Ok(_) => {
             eprintln!("Successfully logged in");
             std::process::exit(0);
         }
         Err(e) => {
-            eprintln!("Error logging in: {e}");
-            std::process::exit(1);
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                eprintln!("Error logging in: address already in use");
+                std::process::exit(EXIT_CODE_WHEN_ADDRESS_ALREADY_IN_USE);
+            } else {
+                eprintln!("Error logging in: {e}");
+                std::process::exit(1);
+            }
         }
     }
 }

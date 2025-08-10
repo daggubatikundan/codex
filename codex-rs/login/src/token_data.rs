@@ -18,8 +18,6 @@ pub struct TokenData {
 }
 
 impl TokenData {
-    /// Returns true if this is a plan that should use the traditional
-    /// "metered" billing via an API key.
     pub(crate) fn is_plan_that_should_use_api_key(&self) -> bool {
         self.id_token
             .chatgpt_plan_type
@@ -32,9 +30,6 @@ impl TokenData {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct IdTokenInfo {
     pub email: Option<String>,
-    /// The ChatGPT subscription plan type
-    /// (e.g., "free", "plus", "pro", "business", "enterprise", "edu").
-    /// (Note: ae has not verified that those are the exact values.)
     pub(crate) chatgpt_plan_type: Option<PlanType>,
 }
 
@@ -135,6 +130,95 @@ where
 {
     let s = String::deserialize(deserializer)?;
     parse_id_token(&s).map_err(serde::de::Error::custom)
+}
+
+// -------- Helpers for parsing OpenAI auth claims from arbitrary JWTs --------
+
+#[derive(Default, Deserialize)]
+struct AuthOuterClaims {
+    #[serde(rename = "https://api.openai.com/auth", default)]
+    auth: Option<AuthInnerClaims>,
+}
+
+#[derive(Default, Deserialize, Clone)]
+struct AuthInnerClaims {
+    #[serde(default)]
+    chatgpt_account_id: Option<String>,
+    #[serde(default)]
+    organization_id: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    completed_platform_onboarding: Option<bool>,
+    #[serde(default)]
+    is_org_owner: Option<bool>,
+    #[serde(default)]
+    chatgpt_plan_type: Option<PlanType>,
+}
+
+fn decode_jwt_payload(token: &str) -> Option<Vec<u8>> {
+    let mut parts = token.split('.');
+    let _header = parts.next();
+    let payload_b64 = parts.next();
+    let _sig = parts.next();
+    payload_b64.and_then(|p| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(p)
+            .ok()
+    })
+}
+
+fn parse_auth_inner_claims(token: &str) -> AuthInnerClaims {
+    decode_jwt_payload(token)
+        .and_then(|bytes| serde_json::from_slice::<AuthOuterClaims>(&bytes).ok())
+        .and_then(|o| o.auth)
+        .unwrap_or_default()
+}
+
+/// Extracts commonly used claims from ID and access tokens.
+/// - account_id is taken from the ID token.
+/// - org_id/project_id prefer ID token, falling back to access token.
+/// - plan_type comes from the access token (as lowercase string).
+/// - needs_setup is computed from (completed_platform_onboarding, is_org_owner)
+pub(crate) fn extract_login_context_from_tokens(
+    id_token: &str,
+    access_token: &str,
+) -> (
+    Option<String>, // account_id
+    Option<String>, // org_id
+    Option<String>, // project_id
+    bool,           // needs_setup
+    Option<String>, // plan_type
+) {
+    let id_inner = parse_auth_inner_claims(id_token);
+    let access_inner = parse_auth_inner_claims(access_token);
+
+    let account_id = id_inner.chatgpt_account_id.clone();
+    let org_id = id_inner
+        .organization_id
+        .clone()
+        .or_else(|| access_inner.organization_id.clone());
+    let project_id = id_inner
+        .project_id
+        .clone()
+        .or_else(|| access_inner.project_id.clone());
+
+    let completed_onboarding = id_inner
+        .completed_platform_onboarding
+        .or(access_inner.completed_platform_onboarding)
+        .unwrap_or(false);
+    let is_org_owner = id_inner
+        .is_org_owner
+        .or(access_inner.is_org_owner)
+        .unwrap_or(false);
+    let needs_setup = !completed_onboarding && is_org_owner;
+
+    let plan_type = access_inner
+        .chatgpt_plan_type
+        .as_ref()
+        .map(PlanType::as_string);
+
+    (account_id, org_id, project_id, needs_setup, plan_type)
 }
 
 #[cfg(test)]
