@@ -674,6 +674,7 @@ dependencies = [
  "maplit",
  "mcp-types",
  "mime_guess",
+ "once_cell",
  "openssl-sys",
  "predicates",
  "pretty_assertions",
@@ -852,7 +853,7 @@ dependencies = [
  "tui-markdown",
  "tui-textarea",
  "unicode-segmentation",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.0",
  "uuid",
 ]
 
