@@ -698,7 +698,7 @@ impl WidgetRef for &ChatComposer {
                     let token_usage = &token_usage_info.total_token_usage;
                     hint.push(Span::from("   "));
                     hint.push(
-                        Span::from(format!("{} tokens used", token_usage.total_tokens))
+                        Span::from(format!("{} tokens used", token_usage.blended_total()))
                             .style(Style::default().add_modifier(Modifier::DIM)),
                     );
                     let last_token_usage = &token_usage_info.last_token_usage;
