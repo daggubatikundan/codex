@@ -222,6 +222,7 @@ async fn process_chat_sse<S>(
                     .send(Ok(ResponseEvent::Completed {
                         response_id: String::new(),
                         token_usage: None,
+                        timestamp: None,
                     }))
                     .await;
                 return;
@@ -245,6 +246,8 @@ async fn process_chat_sse<S>(
                         text: std::mem::take(&mut assistant_text),
                     }],
                     id: None,
+                    token_usage: None,
+                    timestamp: None,
                 };
                 let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
             }
@@ -265,6 +268,7 @@ async fn process_chat_sse<S>(
                 .send(Ok(ResponseEvent::Completed {
                     response_id: String::new(),
                     token_usage: None,
+                    timestamp: None,
                 }))
                 .await;
             return;
@@ -391,6 +395,8 @@ async fn process_chat_sse<S>(
                                     text: std::mem::take(&mut assistant_text),
                                 }],
                                 id: None,
+                                token_usage: None,
+                                timestamp: None,
                             };
                             let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
                         }
@@ -415,6 +421,7 @@ async fn process_chat_sse<S>(
                     .send(Ok(ResponseEvent::Completed {
                         response_id: String::new(),
                         token_usage: None,
+                        timestamp: None,
                     }))
                     .await;
 
@@ -507,6 +514,7 @@ where
                 Poll::Ready(Some(Ok(ResponseEvent::Completed {
                     response_id,
                     token_usage,
+                    timestamp,
                 }))) => {
                     // Build any aggregated items in the correct order: Reasoning first, then Message.
                     let mut emitted_any = false;
@@ -536,6 +544,8 @@ where
                             content: vec![crate::models::ContentItem::OutputText {
                                 text: std::mem::take(&mut this.cumulative),
                             }],
+                            token_usage: token_usage.clone(),
+                            timestamp: timestamp.clone(),
                         };
                         this.pending
                             .push_back(ResponseEvent::OutputItemDone(aggregated_message));
@@ -547,6 +557,7 @@ where
                         this.pending.push_back(ResponseEvent::Completed {
                             response_id: response_id.clone(),
                             token_usage: token_usage.clone(),
+                            timestamp: timestamp.clone(),
                         });
                         // Return the first pending event now.
                         if let Some(ev) = this.pending.pop_front() {
@@ -558,6 +569,7 @@ where
                     return Poll::Ready(Some(Ok(ResponseEvent::Completed {
                         response_id,
                         token_usage,
+                        timestamp,
                     })));
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::Created))) => {
