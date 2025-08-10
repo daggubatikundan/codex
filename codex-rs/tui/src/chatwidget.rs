@@ -79,6 +79,8 @@ pub(crate) struct ChatWidget<'a> {
     current_stream: Option<StreamKind>,
     stream_header_emitted: bool,
     live_max_rows: u16,
+    // Avoid duplicate final-message rendering within a turn
+    printed_final_answer: bool,
 }
 
 struct UserMessage {
@@ -224,6 +226,7 @@ impl ChatWidget<'_> {
             current_stream: None,
             stream_header_emitted: false,
             live_max_rows: 3,
+            printed_final_answer: false,
         }
     }
 
@@ -311,11 +314,36 @@ impl ChatWidget<'_> {
 
                 self.request_redraw();
             }
-            EventMsg::AgentMessage(AgentMessageEvent { message: _ }) => {
-                // Final assistant answer: commit all remaining rows and close with
-                // a blank line. Use the final text if provided, otherwise rely on
-                // streamed deltas already in the builder.
-                self.finalize_stream(StreamKind::Answer);
+            EventMsg::AgentMessage(AgentMessageEvent { message }) => {
+                // Final assistant answer received. If we streamed deltas for this
+                // answer, finalize and flush any remaining rows. If we did NOT get
+                // any deltas, surface the final text directly so the UI shows the
+                // reply even for providers that only emit a terminal message.
+                if !self.printed_final_answer
+                    && self.answer_buffer.is_empty()
+                    && self.current_stream != Some(StreamKind::Answer)
+                {
+                    use ratatui::text::Line as RLine;
+                    let mut lines: Vec<RLine<'static>> = Vec::new();
+                    // Emit header once for the final message block.
+                    lines.push(RLine::from("codex".magenta().bold()));
+                    for l in message.lines() {
+                        lines.push(RLine::from(l.to_string()));
+                    }
+                    // Close the block with a blank line for readability.
+                    lines.push(RLine::from(""));
+                    self.app_event_tx.send(AppEvent::InsertHistory(lines));
+                    // Clear any residual live overlay/state to be safe.
+                    self.bottom_pane.clear_live_ring();
+                    self.live_builder = RowBuilder::new(self.live_builder.width());
+                    self.current_stream = None;
+                    self.stream_header_emitted = false;
+                    self.printed_final_answer = true;
+                } else {
+                    // We had streaming deltas; just finalize the stream.
+                    self.finalize_stream(StreamKind::Answer);
+                    self.printed_final_answer = true;
+                }
                 self.request_redraw();
             }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
@@ -332,9 +360,32 @@ impl ChatWidget<'_> {
                 self.stream_push_and_maybe_commit(&delta);
                 self.request_redraw();
             }
-            EventMsg::AgentReasoning(AgentReasoningEvent { text: _ }) => {
-                // Final reasoning: commit remaining rows and close with a blank.
-                self.finalize_stream(StreamKind::Reasoning);
+            EventMsg::AgentReasoning(AgentReasoningEvent { text }) => {
+                // Final reasoning received. If no deltas were streamed for this
+                // reasoning block, surface the final text directly; otherwise
+                // just finalize the stream. Multiple final reasoning events can
+                // appear in a single turn; render each as its own block.
+                if self.reasoning_buffer.is_empty()
+                    && self.current_stream != Some(StreamKind::Reasoning)
+                {
+                    use ratatui::text::Line as RLine;
+                    let mut lines: Vec<RLine<'static>> = Vec::new();
+                    lines.push(RLine::from("thinking".magenta().italic()));
+                    // For summarized reasoning, the final text arrives via this event; we render
+                    // a single block with a trailing blank line for readability.
+                    for l in text.lines() {
+                        lines.push(RLine::from(l.to_string()));
+                    }
+                    lines.push(RLine::from(""));
+                    self.app_event_tx.send(AppEvent::InsertHistory(lines));
+                    self.bottom_pane.clear_live_ring();
+                    self.live_builder = RowBuilder::new(self.live_builder.width());
+                    self.current_stream = None;
+                    self.stream_header_emitted = false;
+                } else {
+                    // We had streaming deltas; just finalize the reasoning stream.
+                    self.finalize_stream(StreamKind::Reasoning);
+                }
                 self.request_redraw();
             }
             EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
@@ -357,6 +408,15 @@ impl ChatWidget<'_> {
                 // Replace composer with single-line spinner while waiting.
                 self.bottom_pane
                     .update_status_text("waiting for model".to_string());
+                // Reset duplicate-guard at the start of a turn
+                self.printed_final_answer = false;
+                // Also clear any stale live buffers from a previous turn.
+                self.answer_buffer.clear();
+                self.reasoning_buffer.clear();
+                self.content_buffer.clear();
+                self.live_builder = RowBuilder::new(self.live_builder.width());
+                self.current_stream = None;
+                self.stream_header_emitted = false;
                 self.request_redraw();
             }
             EventMsg::TaskComplete(TaskCompleteEvent {

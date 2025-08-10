@@ -314,13 +314,13 @@ struct SseEvent {
 #[derive(Debug, Deserialize)]
 struct ResponseCreated {}
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ResponseCompleted {
     id: String,
     usage: Option<ResponseCompletedUsage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ResponseCompletedUsage {
     input_tokens: u64,
     input_tokens_details: Option<ResponseCompletedInputTokensDetails>,
@@ -341,12 +341,12 @@ impl From<ResponseCompletedUsage> for TokenUsage {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ResponseCompletedInputTokensDetails {
     cached_tokens: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ResponseCompletedOutputTokensDetails {
     reasoning_tokens: u64,
 }
@@ -363,6 +363,14 @@ async fn process_sse<S>(
     // If the stream stays completely silent for an extended period treat it as disconnected.
     // The response id returned from the "complete" message.
     let mut response_completed: Option<ResponseCompleted> = None;
+    let mut completed_emitted: bool = false;
+    // Track whether we saw incremental output to decide if we need to fall back
+    // to parsing the final `response.output` array.
+    let mut saw_output_item_done = false;
+    let mut saw_any_streaming_delta = false;
+    let mut saw_reasoning_delta = false;
+    let mut saw_reasoning_item_done = false;
+    let mut deferred_completed_response: Option<serde_json::Value> = None;
 
     loop {
         let sse = match timeout(idle_timeout, stream.next()).await {
@@ -379,11 +387,35 @@ async fn process_sse<S>(
                         id: response_id,
                         usage,
                     }) => {
-                        let event = ResponseEvent::Completed {
-                            response_id,
-                            token_usage: usage.map(Into::into),
-                        };
-                        let _ = tx_event.send(Ok(event)).await;
+                        // If the connection closed without an explicit completed event
+                        // having been emitted earlier, emit it now (with fallback if needed).
+                        if !completed_emitted {
+                            // Fallback: if no items/deltas were forwarded but we captured a
+                            // final response body, parse its `output` array now and emit
+                            // synthetic OutputItemDone events so higher layers see a result.
+                            if !saw_output_item_done && !saw_any_streaming_delta {
+                                if let Some(resp) = deferred_completed_response.take() {
+                                    if let Some(output) =
+                                        resp.get("output").and_then(|v| v.as_array())
+                                    {
+                                        for v in output {
+                                            if let Ok(item) =
+                                                serde_json::from_value::<ResponseItem>(v.clone())
+                                            {
+                                                let _ = tx_event
+                                                    .send(Ok(ResponseEvent::OutputItemDone(item)))
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            let event = ResponseEvent::Completed {
+                                response_id,
+                                token_usage: usage.map(Into::into),
+                            };
+                            let _ = tx_event.send(Ok(event)).await;
+                        }
                     }
                     None => {
                         let _ = tx_event
@@ -438,6 +470,10 @@ async fn process_sse<S>(
                     continue;
                 };
 
+                saw_output_item_done = true;
+                if matches!(item, ResponseItem::Reasoning { .. }) {
+                    saw_reasoning_item_done = true;
+                }
                 let event = ResponseEvent::OutputItemDone(item);
                 if tx_event.send(Ok(event)).await.is_err() {
                     return;
@@ -445,6 +481,7 @@ async fn process_sse<S>(
             }
             "response.output_text.delta" => {
                 if let Some(delta) = event.delta {
+                    saw_any_streaming_delta = true;
                     let event = ResponseEvent::OutputTextDelta(delta);
                     if tx_event.send(Ok(event)).await.is_err() {
                         return;
@@ -453,6 +490,8 @@ async fn process_sse<S>(
             }
             "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = event.delta {
+                    saw_any_streaming_delta = true;
+                    saw_reasoning_delta = true;
                     let event = ResponseEvent::ReasoningSummaryDelta(delta);
                     if tx_event.send(Ok(event)).await.is_err() {
                         return;
@@ -461,6 +500,8 @@ async fn process_sse<S>(
             }
             "response.reasoning_text.delta" => {
                 if let Some(delta) = event.delta {
+                    saw_any_streaming_delta = true;
+                    saw_reasoning_delta = true;
                     let event = ResponseEvent::ReasoningContentDelta(delta);
                     if tx_event.send(Ok(event)).await.is_err() {
                         return;
@@ -487,10 +528,64 @@ async fn process_sse<S>(
             }
             // Final response completed – includes array of output items & id
             "response.completed" => {
-                if let Some(resp_val) = event.response {
-                    match serde_json::from_value::<ResponseCompleted>(resp_val) {
+                if let Some(resp_val) = event.response.clone() {
+                    match serde_json::from_value::<ResponseCompleted>(resp_val.clone()) {
                         Ok(r) => {
                             response_completed = Some(r);
+                            deferred_completed_response = Some(resp_val);
+                            // If we haven't streamed anything, emit output immediately and then Completed
+                            // so UIs don't wait for the connection to fully close.
+                            if !saw_output_item_done && !saw_any_streaming_delta {
+                                if let Some(resp) = deferred_completed_response.clone() {
+                                    if let Some(output) =
+                                        resp.get("output").and_then(|v| v.as_array())
+                                    {
+                                        for v in output {
+                                            if let Ok(item) =
+                                                serde_json::from_value::<ResponseItem>(v.clone())
+                                            {
+                                                let _ = tx_event
+                                                    .send(Ok(ResponseEvent::OutputItemDone(item)))
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(ResponseCompleted { id, usage }) =
+                                    response_completed.clone()
+                                {
+                                    let _ = tx_event
+                                        .send(Ok(ResponseEvent::Completed {
+                                            response_id: id,
+                                            token_usage: usage.map(Into::into),
+                                        }))
+                                        .await;
+                                    completed_emitted = true;
+                                }
+                            } else if !(saw_reasoning_delta || saw_reasoning_item_done) {
+                                // We streamed other content (e.g. assistant deltas), but never received
+                                // reasoning deltas or reasoning items. Emit only the reasoning items from
+                                // the final output so the UI can show the "thinking" block.
+                                if let Some(resp) = deferred_completed_response.clone() {
+                                    if let Some(output) =
+                                        resp.get("output").and_then(|v| v.as_array())
+                                    {
+                                        for v in output {
+                                            if let Ok(item) =
+                                                serde_json::from_value::<ResponseItem>(v.clone())
+                                            {
+                                                if matches!(item, ResponseItem::Reasoning { .. }) {
+                                                    let _ = tx_event
+                                                        .send(Ok(ResponseEvent::OutputItemDone(
+                                                            item,
+                                                        )))
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Err(e) => {
                             debug!("failed to parse ResponseCompleted: {e}");
