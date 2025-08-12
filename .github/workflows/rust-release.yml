@@ -19,7 +19,7 @@ jobs:
   tag-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Validate tag matches Cargo.toml version
         shell: bash
@@ -72,7 +72,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.88
         with:
           targets: ${{ matrix.target }}
